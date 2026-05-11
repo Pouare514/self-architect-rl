@@ -54,28 +54,93 @@ class GraphDef:
         self.edges.append(EdgeDef(from_id, to_id, connection_type))
         return self
 
+class AddModule(nn.Module):
+    """Element-wise addition of multiple inputs. Used for skip/residual connections."""
+    is_multi_input = True
+
+    def forward(self, inputs):
+        result = inputs[0]
+        for inp in inputs[1:]:
+            result = result + inp
+        return result
+
+
 class DAGModule(nn.Module):
     def __init__(self, modules: nn.ModuleDict, edges: list, input_node_id="input"):
         super().__init__()
         self.layers = modules
         self.edges = edges
         self.input_node_id = input_node_id
-        
+        self._topo_order = None
+
+    def _topo_sort(self):
+        """Kahn's algorithm for topological ordering of the DAG."""
+        from collections import defaultdict, deque
+
+        in_degree = defaultdict(int)
+        adj = defaultdict(list)
+        all_nodes = {self.input_node_id}
+
+        for edge in self.edges:
+            all_nodes.add(edge.from_id)
+            all_nodes.add(edge.to_id)
+            adj[edge.from_id].append(edge.to_id)
+            in_degree[edge.to_id] += 1
+
+        queue = deque(n for n in all_nodes if in_degree[n] == 0)
+        order = []
+        while queue:
+            node = queue.popleft()
+            order.append(node)
+            for neighbor in adj[node]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+
+        return order
+
+    def _build_incoming_map(self):
+        from collections import defaultdict
+        incoming = defaultdict(list)
+        for edge in self.edges:
+            incoming[edge.to_id].append(edge.from_id)
+        return incoming
+
     def forward(self, x):
         outputs = {self.input_node_id: x}
-        # Execution naive selon l'ordre des edges (doit être trié topologiquement)
-        for edge in self.edges:
-            if edge.from_id in outputs:
-                in_val = outputs[edge.from_id]
-                # Si le noeud cible n'a pas encore été calculé
-                if edge.to_id not in outputs:
-                    if edge.to_id in self.layers:
-                        outputs[edge.to_id] = self.layers[str(edge.to_id)](in_val)
-                    else:
-                        outputs[edge.to_id] = in_val # Si ce n'est pas une couche, pass-through
-        
-        # Retourne la dernière valeur calculée
-        return outputs[self.edges[-1].to_id]
+
+        # Compute topological order (cached after first call)
+        if self._topo_order is None:
+            self._topo_order = self._topo_sort()
+            self._incoming = self._build_incoming_map()
+
+        for node_id in self._topo_order:
+            if node_id == self.input_node_id:
+                continue
+
+            # Collect all inputs from incoming edges
+            inputs = [outputs[src] for src in self._incoming[node_id] if src in outputs]
+            if not inputs:
+                continue
+
+            if node_id in self.layers:
+                layer = self.layers[node_id]
+                if getattr(layer, 'is_multi_input', False):
+                    outputs[node_id] = layer(inputs)
+                else:
+                    outputs[node_id] = layer(inputs[0])
+            else:
+                # Pass-through (non-layer node)
+                outputs[node_id] = inputs[0]
+
+        # Return the last computed node in topological order
+        return outputs[self._topo_order[-1]]
+
+    def invalidate_topo_cache(self):
+        """Call after modifying edges to force recomputation of topological order."""
+        self._topo_order = None
+        self._incoming = None
+
 
 class ModuleBuilder:
     """
@@ -87,6 +152,7 @@ class ModuleBuilder:
         "relu": nn.ReLU,
         "flatten": nn.Flatten,
         "layer_norm": nn.LayerNorm,
+        "add": AddModule,
     }
 
     @classmethod
@@ -102,5 +168,6 @@ class ModuleBuilder:
                 modules[str(node_id)] = layer_class(**node.config)
             else:
                 raise ValueError(f"Unknown layer type: {node.layer_type}")
-                
+
         return DAGModule(modules, graph_def.edges, input_node_id)
+

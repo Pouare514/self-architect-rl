@@ -13,3 +13,6 @@ tqdm
 wandb
 tensorboard
 matplotlib
+
+# Distributed (optional)
+# ray[default]  # uncomment for distributed PPO

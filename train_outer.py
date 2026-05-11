@@ -170,9 +170,9 @@ def main():
             print("Rebuilding modules and transferring weights...")
             new_perc, new_wm, new_pol, new_val = build_modules(graphs)
             
-            if action.item() in [1, 3, 5]:
+            if action.item() in [1, 3, 5, 7]:
                 modifier.transfer_weights(pol, new_pol, graphs['policy'])
-            elif action.item() in [2, 4, 6]:
+            elif action.item() in [2, 4, 6, 8]:
                 modifier.transfer_weights(val, new_val, graphs['value'])
                 
             perc, wm, pol, val = new_perc, new_wm, new_pol, new_val

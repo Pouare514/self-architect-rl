@@ -135,9 +135,102 @@ def test_channel_importances():
     assert (importances >= 0).all()
     print("Channel importance utility: SUCCESS")
 
+
+def test_skip_connection():
+    from configurator.graph_modifier import GraphModifier
+
+    # Build a policy graph: input(128) -> lin(128->256) -> relu -> out(256->7)
+    g_pol = GraphDef()
+    g_pol.add_node("pol_lin1", "linear", {"in_features": 128, "out_features": 256})
+    g_pol.add_node("pol_relu1", "relu")
+    g_pol.add_node("pol_out", "linear", {"in_features": 256, "out_features": 7})
+    g_pol.add_edge("input", "pol_lin1")
+    g_pol.add_edge("pol_lin1", "pol_relu1")
+    g_pol.add_edge("pol_relu1", "pol_out")
+
+    old_model = ModuleBuilder.build(g_pol)
+    dummy_input = torch.randn(2, 128)
+    with torch.no_grad():
+        out_old = old_model(dummy_input)
+
+    # Apply skip connection: input -> proj(128->256) -> add + main_path -> pol_out
+    modifier = GraphModifier()
+    graphs = {'policy': g_pol}
+    mutated = modifier.apply_action(graphs, GraphModifier.POLICY_ADD_SKIP)
+    assert mutated, "Skip connection mutation should have been applied"
+
+    # Verify graph structure: should have add node and projection
+    add_nodes = [n for n in g_pol.nodes.values() if n.layer_type == "add"]
+    assert len(add_nodes) == 1, f"Expected 1 add node, got {len(add_nodes)}"
+
+    proj_nodes = [n for n in g_pol.nodes.values() if n.id.startswith("skip_proj")]
+    assert len(proj_nodes) == 1, f"Expected 1 projection node (128 != 256), got {len(proj_nodes)}"
+    assert proj_nodes[0].config['in_features'] == 128
+    assert proj_nodes[0].config['out_features'] == 256
+
+    # Build and test forward pass
+    new_model = ModuleBuilder.build(g_pol)
+    modifier.transfer_weights(old_model, new_model, g_pol)
+
+    with torch.no_grad():
+        out_new = new_model(dummy_input)
+
+    assert out_new.shape == out_old.shape, f"Shape mismatch: {out_new.shape} vs {out_old.shape}"
+    assert not torch.isnan(out_new).any(), "NaN found after skip mutation"
+    print("Skip connection mutation: SUCCESS")
+
+
+def test_skip_duplicate_prevention():
+    from configurator.graph_modifier import GraphModifier
+
+    g_pol = GraphDef()
+    g_pol.add_node("pol_lin1", "linear", {"in_features": 128, "out_features": 256})
+    g_pol.add_node("pol_relu1", "relu")
+    g_pol.add_node("pol_out", "linear", {"in_features": 256, "out_features": 7})
+    g_pol.add_edge("input", "pol_lin1")
+    g_pol.add_edge("pol_lin1", "pol_relu1")
+    g_pol.add_edge("pol_relu1", "pol_out")
+
+    modifier = GraphModifier()
+    graphs = {'policy': g_pol}
+
+    # First skip should succeed
+    assert modifier.apply_action(graphs, GraphModifier.POLICY_ADD_SKIP) is True
+    # Second skip should be blocked (add node already feeds into pol_out)
+    assert modifier.apply_action(graphs, GraphModifier.POLICY_ADD_SKIP) is False
+    print("Skip duplicate prevention: SUCCESS")
+
+
+def test_add_module_direct():
+    """Test AddModule directly with a hand-built multi-input graph."""
+    from modules.graph import AddModule
+
+    g = GraphDef()
+    g.add_node("lin_a", "linear", {"in_features": 8, "out_features": 16})
+    g.add_node("lin_b", "linear", {"in_features": 8, "out_features": 16})
+    g.add_node("add1", "add", {})
+    g.add_node("out", "linear", {"in_features": 16, "out_features": 4})
+    g.add_edge("input", "lin_a")
+    g.add_edge("input", "lin_b")
+    g.add_edge("lin_a", "add1")
+    g.add_edge("lin_b", "add1")
+    g.add_edge("add1", "out")
+
+    model = ModuleBuilder.build(g)
+    dummy = torch.randn(3, 8)
+    out = model(dummy)
+    assert out.shape == (3, 4), f"Expected (3, 4), got {out.shape}"
+    assert not torch.isnan(out).any(), "NaN in AddModule output"
+    print("AddModule direct multi-input DAG: SUCCESS")
+
+
 if __name__ == "__main__":
     test()
     test_mutation_identity()
     test_pruning_preserves_shape()
     test_meta_phase_scheduler()
     test_channel_importances()
+    test_skip_connection()
+    test_skip_duplicate_prevention()
+    test_add_module_direct()
+

@@ -14,6 +14,8 @@ class GraphModifier:
     VALUE_WIDEN = 4
     POLICY_PRUNE_LAYER = 5
     VALUE_PRUNE_LAYER = 6
+    POLICY_ADD_SKIP = 7
+    VALUE_ADD_SKIP = 8
     PHASE_PRUNE = "prune"
     PHASE_GROW = "grow"
 
@@ -69,13 +71,86 @@ class GraphModifier:
         print(f"[Architect] Mutated {label}: Pruned {target_node_id} from {out_features} to {new_dim}")
         return True
 
+    def _get_node_output_dim(self, graph, node_id):
+        """Infer the output dimension of a node by inspecting its config or tracing backwards."""
+        if node_id == "input":
+            # Find the first layer's in_features as a proxy for input dim
+            for e in graph.edges:
+                if e.from_id == "input":
+                    first_node = graph.nodes.get(e.to_id)
+                    if first_node and 'in_features' in first_node.config:
+                        return first_node.config['in_features']
+            return None
+        node = graph.nodes.get(node_id)
+        if not node:
+            return None
+        if 'out_features' in node.config:
+            return node.config['out_features']
+        if 'out_channels' in node.config:
+            return node.config['out_channels']
+        # For activation/passthrough nodes, trace backward
+        for e in graph.edges:
+            if e.to_id == node_id:
+                return self._get_node_output_dim(graph, e.from_id)
+        return None
+
+    def _add_skip_connection(self, graph, source_node_id, target_output_node_id, label):
+        """
+        Add a residual skip from source_node_id to just before target_output_node_id.
+        Inserts an 'add' node. If dims differ, inserts a projection on the skip path.
+        Returns True if the mutation was applied.
+        """
+        # Find the edge going into the target output node
+        target_edge = next((e for e in graph.edges if e.to_id == target_output_node_id), None)
+        if not target_edge:
+            return False
+
+        # Avoid duplicate skip: check if an 'add' node already feeds into target
+        predecessor_id = target_edge.from_id
+        pred_node = graph.nodes.get(predecessor_id)
+        if pred_node and pred_node.layer_type == "add":
+            print(f"[Architect] Skip already exists before {target_output_node_id}, skipping")
+            return False
+
+        self.mutation_count += 1
+        add_id = f"skip_add_{self.mutation_count}"
+        graph.add_node(add_id, "add", {})
+
+        # Rewire: predecessor -> add_node -> target_output
+        old_from = target_edge.from_id
+        graph.edges.remove(target_edge)
+        graph.add_edge(old_from, add_id)
+        graph.add_edge(add_id, target_output_node_id)
+
+        # Check dimensions for projection
+        source_dim = self._get_node_output_dim(graph, source_node_id)
+        # The dim flowing into add from the main path = output dim of old_from
+        main_path_dim = self._get_node_output_dim(graph, old_from)
+
+        if source_dim is not None and main_path_dim is not None and source_dim != main_path_dim:
+            proj_id = f"skip_proj_{self.mutation_count}"
+            graph.add_node(proj_id, "linear", {"in_features": source_dim, "out_features": main_path_dim})
+            graph.add_edge(source_node_id, proj_id)
+            graph.add_edge(proj_id, add_id)
+            print(f"[Architect] Mutated {label}: Added skip {source_node_id}->{proj_id}->{add_id} (proj {source_dim}->{main_path_dim})")
+        else:
+            graph.add_edge(source_node_id, add_id)
+            print(f"[Architect] Mutated {label}: Added skip {source_node_id}->{add_id} (no projection needed)")
+
+        return True
+
     def apply_action(self, agent_graphs, action_idx):
         mutated = False
 
-        if self.phase == self.PHASE_PRUNE and action_idx in (self.POLICY_ADD_LAYER, self.VALUE_ADD_LAYER, self.POLICY_WIDEN, self.VALUE_WIDEN):
+        grow_actions = (self.POLICY_ADD_LAYER, self.VALUE_ADD_LAYER,
+                        self.POLICY_WIDEN, self.VALUE_WIDEN,
+                        self.POLICY_ADD_SKIP, self.VALUE_ADD_SKIP)
+        prune_actions = (self.POLICY_PRUNE_LAYER, self.VALUE_PRUNE_LAYER)
+
+        if self.phase == self.PHASE_PRUNE and action_idx in grow_actions:
             print(f"[Architect] Deferred grow action {action_idx} during prune phase")
             return False
-        if self.phase == self.PHASE_GROW and action_idx in (self.POLICY_PRUNE_LAYER, self.VALUE_PRUNE_LAYER):
+        if self.phase == self.PHASE_GROW and action_idx in prune_actions:
             print(f"[Architect] Deferred prune action {action_idx} during grow phase")
             return False
 
@@ -144,6 +219,14 @@ class GraphModifier:
 
         elif action_idx == self.VALUE_PRUNE_LAYER:
             mutated = self._prune_hidden_layer(agent_graphs['value'], "val_lin1", "Value Prune")
+
+        elif action_idx == self.POLICY_ADD_SKIP:
+            mutated = self._add_skip_connection(
+                agent_graphs['policy'], "input", "pol_out", "Policy Skip")
+
+        elif action_idx == self.VALUE_ADD_SKIP:
+            mutated = self._add_skip_connection(
+                agent_graphs['value'], "input", "val_out", "Value Skip")
 
         return mutated
 
