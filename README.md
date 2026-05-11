@@ -9,10 +9,13 @@ Plutôt que d'avoir une architecture rigide fixée avant l'apprentissage, cet ag
 - **Moteur de Graphe Dynamique** : L'architecture de l'agent est définie par un DAG (Directed Acyclic Graph) généré et compilé à la volée.
 - **Encodeur JEPA** : Utilise une architecture Vision Transformer (ViT) inspirée de I-JEPA pour la perception.
 - **World Model Récurrent** : Modélise la dynamique de l'environnement latent via un RNN/GRU, à l'image de Dreamer.
-- **PPO Inner-Loop** : L'apprentissage des actions est assuré par un algorithme PPO (Proximal Policy Optimization) complet avec GAE, permettant une adaptation très stable.
-- **Mutations Architecturales à Chaud** : L'agent peut s'allonger (ajout de couches) ou s'élargir (ajout de neurones) en cours d'épisode sans détruire ses poids préalablement appris (Zero-Padding Initialization).
-- **Pruning Structuré** : L'architecte peut désormais supprimer des canaux de sortie sur les couches `Linear` et `Conv2d` avec un recalcul automatique de `in_features` sur la couche suivante.
-- **Scheduler Prune/Grow** : Le contrôleur méta alterne des phases de prune et de croissance selon le méta-étape, avec un indicateur explicite envoyé au policy network.
+- **PPO Inner-Loop** : L'apprentissage des actions est assuré par un algorithme PPO complet avec GAE, permettant une adaptation très stable.
+- **Mutations Architecturales à Chaud** : L'agent peut s'allonger (Depth), s'élargir (Width) ou ajouter des **Skip Connections** en cours d'épisode sans détruire ses poids.
+- **Pruning Structuré** : L'architecte peut supprimer des canaux de sortie avec un recalcul automatique des connexions suivantes.
+- **Scheduler Prune/Grow** : Le contrôleur méta alterne des phases de prune et de croissance selon le cycle méta.
+- **Meta-RL Multi-Tâches** : Entraînement sur une rotation d'environnements MiniGrid pour forcer une généralisation structurelle.
+- **Support Distribué (Ray)** : Parallélisation de la collecte d'expériences via Ray pour accélérer massivement l'entraînement.
+- **Observabilité WandB** : Suivi en temps réel de l'évolution de la topologie du DAG et des métriques de performance.
 
 ---
 
@@ -62,13 +65,16 @@ Pour proposer une modification, merci d'ouvrir une *Issue* pour en discuter, pui
 
 ## 🔮 Le Futur du Projet (Roadmap)
 
-Le projet MVP est fonctionnel, mais le véritable potentiel de l'architecte reste à explorer :
+Le projet MVP est désormais robuste. Les prochaines étapes visent à passer à l'échelle supérieure :
 
-- [x] **Élagage Actif (Pruning)** : L'architecte peut supprimer des neurones des couches `Linear` et `Conv2d` et recalculer les connexions suivantes.
-- [x] **Scheduler Prune/Grow** : Le méta-contrôleur alterne les phases de prune et de croissance selon la méta-itération et informe le policy network.
-- [ ] **Mutations Topologiques Flexibles** : Permettre l'ajout de connections résiduelles aléatoires (Skip Connections) ou de flux parallèles au sein du DAG.
-- [ ] **Méta-Généralisation avec XLand-MiniGrid** : Entraîner l'agent sur des centaines de tâches procédurales (via JAX/XLand) pour forcer l'architecte à développer des structures d'apprentissage méta-plastiques.
-- [ ] **PPO Distribué (Ray/RLlib)** : Paralléliser l'Inner Loop sur plusieurs cœurs/GPUs pour accélérer massivement la boucle Meta-RL.
-- [ ] **Intégration TensorBoard / WandB** : Pour visualiser l'évolution du graphe d'architecture et de la taille des poids en temps réel.
+- [x] **Élagage Actif (Pruning)** : Suppression intelligente de neurones basée sur l'importance des canaux (L1-Norm).
+- [x] **Scheduler Prune/Grow** : Alternance cyclique des phases de mutation pour stabiliser l'apprentissage.
+- [x] **Mutations Topologiques (Skip Connections)** : Ajout dynamique de chemins résiduels avec couches de projection automatiques.
+- [x] **PPO Distribué (Ray)** : Passage à l'échelle via Ray pour une collecte d'expérience multi-workers.
+- [x] **Observabilité WandB** : Dashboarding complet des métriques de graphe (profondeur, largeur, paramètres).
+- [ ] **Méta-Généralisation avec XLand-MiniGrid** : Entraîner l'agent sur des milliers de tâches procédurales pour forcer l'émergence de structures méta-plastiques.
+- [ ] **Accélération JAX** : Portage de l'Inner Loop sur JAX/XLand pour multiplier par 100 la vitesse de collecte.
+- [ ] **Méta-Objectifs Hardware-Aware** : Intégration d'une pénalité directe sur la latence (ms) et les FLOPs dans la récompense de l'architecte.
+- [ ] **Pruning par Sensibilité (Taylor Expansion)** : Utilisation des gradients pour un élagage plus précis que la simple norme des poids.
 
 N'hésitez pas à forker le projet et à expérimenter vos propres idées de neuro-évolution !
