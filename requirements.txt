@@ -1,0 +1,15 @@
+# RL, Vision and Deep Learning
+torch>=2.0.0
+torchvision
+numpy
+
+# MiniGrid and RL Environments
+minigrid
+gymnasium
+# xminigrid # uncomment when moving to XLand-MiniGrid
+
+# Logging, utilities
+tqdm
+wandb
+tensorboard
+matplotlib
